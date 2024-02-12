@@ -158,15 +158,19 @@ class DiscordBot(commands.Bot):
         self.logger.info(
             f"Running on: {platform.system()} {platform.release()} ({os.name})"
         )
-        self.logger.info("---------------------------------------------------------")
+
         await self.init_db()
+        self.logger.info("Database initialization complete.")
+        self.logger.info("Start loading extensions.")
         await self.load_cogs()
+        self.logger.info("extension loading complete.")
         self.status_task.start()
         self.database = DatabaseManager(
             connection=await aiosqlite.connect(
                 f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
             )
         )
+        self.logger.info("Setup complete.")
 
     async def on_message(self, message: discord.Message) -> None:
         """
