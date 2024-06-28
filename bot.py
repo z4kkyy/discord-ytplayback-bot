@@ -3,7 +3,7 @@ Copyright © Krypton 2019-2023 - https://github.com/kkrypt0nn (https://krypton.n
 
 Version: 6.1.0
 
-Modified by Y.Ozaki - https://github.com/mttk1528
+Modified by z4kky - https://github.com/z4kkyy
 """
 
 import json
@@ -138,7 +138,7 @@ class DiscordBot(commands.Bot):
         """
         Setup the game status task of the bot.
         """
-        statuses = ["with you!"]
+        statuses = ["yt-dlp"]
         await self.change_presence(activity=discord.Game(random.choice(statuses)))
 
     @status_task.before_loop
