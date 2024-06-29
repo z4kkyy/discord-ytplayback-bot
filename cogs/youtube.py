@@ -68,9 +68,12 @@ class YouTube(commands.Cog, name="youtube"):
                     self.bot.logger.error(f"Failed to play the audio: {error}")
 
                 if self.server_to_current_loop_status[guild_id]:
-                    print("Loop status is True. Playing again.")
+                    self.bot.logger.info(f"Loop status is True. Playing again. (guild id: {guild_id})")
                     file_path = self.server_to_current_song_info[guild_id]['path']
-                    ffmpeg_options = {"options": "-af 'volume=0.1' -ac 2"}
+                    ffmpeg_options = {
+                        "options": "-af 'volume=0.1' -vn -ac 2",
+                        "stderr": subprocess.DEVNULL,
+                    }
                     self.server_to_voice_client[guild_id].play(
                         discord.FFmpegPCMAudio(file_path, **ffmpeg_options),
                         after=self._create_after_callback(guild_id, context)
@@ -78,10 +81,10 @@ class YouTube(commands.Cog, name="youtube"):
                     self.server_to_current_song_info[guild_id]['start_time'] = discord.utils.utcnow()
                     self.bot.loop.create_task(self._start_timestamp_tracking(guild_id))
                 elif self.server_to_queue[guild_id].queue:
-                    print("Queue is not empty. Playing next song.")
-                    self.bot.loop.create_task(self._play_next(guild_id, context))
+                    self.bot.logger.info(f"Queue is not empty. Playing next song. (guild id: {guild_id})")
+                    await self._play_next(guild_id, context)
                 else:
-                    print("Loop is off and queue is empty. Stopping playback.")
+                    self.bot.logger.info(f"Loop is off and queue is empty. Stopping playback. (guild id: {guild_id})")
                     self.server_to_if_playnow[guild_id] = False
                     self.server_to_current_song_info[guild_id] = None
                     self.server_to_timestamps[guild_id] = 0
@@ -89,7 +92,7 @@ class YouTube(commands.Cog, name="youtube"):
                         embed = discord.Embed(
                             description="Playback finished. The queue is now empty.", color=0xE02B2B
                         )
-                        self.bot.loop.create_task(context.send(embed=embed))
+                        await context.send(embed=embed)
 
             asyncio.run_coroutine_threadsafe(play_again(), self.bot.loop)
         return after_callback
@@ -204,7 +207,7 @@ class YouTube(commands.Cog, name="youtube"):
                 self.bot.logger.info(f"[YouTube] [info] Successfully downloaded {url}")
                 match_already_recorded = re.search(r'\[download\] ([\w-]+): has already been recorded in the archive', stdout)
                 if match_already_recorded:
-                    print("[YouTube] already recorded!")
+                    self.bot.logger.info("[YouTube] audio already downloaded in the archive.")
                     file_id = match_already_recorded.group(1)
                     file_path = os.path.join(self.download_dir, file_id + ".mp3")
                 else:
@@ -217,8 +220,8 @@ class YouTube(commands.Cog, name="youtube"):
                         if match_file_path:
                             file_path = match_file_path.group(1)
                             file_id = file_path.split("/")[-1].split(".")[0]
-                            print("file_id:", file_id)
-                            print("file_path:", file_path)
+                            # print("file_id:", file_id)
+                            # print("file_path:", file_path)
                 return file_id, file_path
             else:
                 self.bot.logger.error(f"Failed to download a video: <{url}>")
@@ -279,7 +282,7 @@ class YouTube(commands.Cog, name="youtube"):
             )
             await concat_process.communicate()
             file_id = combined_file_path.split("/")[-1].split(".")[0]
-            print(f"combined_file_path = {combined_file_path}")
+            self.bot.logger.info(f"combined_file_path = {combined_file_path}")
             return file_id, combined_file_path
         else:
             return ""
@@ -298,10 +301,10 @@ class YouTube(commands.Cog, name="youtube"):
             guild_id = member.guild.id
             if before.channel is not None and after.channel is None:
                 if self.server_to_expected_disconnection[guild_id]:
-                    print("Detected normal disconnection.")
+                    self.bot.logger.info(f"Detected normal disconnection. (guild id: {guild_id})")
                     self.server_to_expected_disconnection[guild_id] = False
                 else:
-                    print("Detected unexpected disconnection.")
+                    self.bot.logger.info(f"Detected unexpected disconnection. (guild id: {guild_id})")
                     # reconnect to the voice channel
                     self.server_to_voice_client[guild_id] = await before.channel.connect()
 
@@ -316,12 +319,17 @@ class YouTube(commands.Cog, name="youtube"):
         if current_song:
             file_path = current_song['path']
             ffmpeg_options = {
-                "options": f"-af 'volume=0.1' -ac 2 -ss {self.server_to_timestamps[guild_id]}"
+                "options": f"-af 'volume=0.1' -vn -ac 2 -ss {self.server_to_timestamps[guild_id]}",
+                "stderr": subprocess.DEVNULL,
             }
             self.server_to_voice_client[guild_id].play(
                 discord.FFmpegPCMAudio(file_path, **ffmpeg_options),
                 after=self._create_after_callback(guild_id, None)
             )
+            if self.server_to_current_loop_status[guild_id]:
+                self.bot.logger.info(f"Resuming playback with loop status: on (guild id: {guild_id})")
+            else:
+                self.bot.logger.info(f"Resuming playback with loop status: off (guild id: {guild_id})")
 
     async def _play_next(self, guild_id: int, context: Context) -> None:
         if not self.server_to_queue[guild_id].queue:
@@ -333,26 +341,27 @@ class YouTube(commands.Cog, name="youtube"):
             return
 
         if self.server_to_voice_client[guild_id].is_playing():
-            print("function _play_next is called while playing.")
+            self.bot.logger.info(f"function _play_next is called while playing. (guild id: {guild_id}) ")
             return
 
         if self.server_to_timestamp_task[guild_id]:
             self.server_to_timestamp_task[guild_id].cancel()
 
-        self.server_to_timestamp_task[guild_id] = self.bot.loop.create_task(self._start_timestamp_tracking(guild_id))
+        self.server_to_timestamp_task[guild_id] = await self._start_timestamp_tracking(guild_id)
 
         next_song_info = await self.server_to_queue[guild_id].get()
         self.server_to_current_song_info[guild_id] = next_song_info
         self.server_to_current_song_info[guild_id]['start_time'] = discord.utils.utcnow()
 
         ffmpeg_options = {
-            "options": "-af 'volume=0.1' -ac 2"
+            "options": "-af 'volume=0.1' -vn -ac 2",
+            "stderr": subprocess.DEVNULL,
         }
         self.server_to_voice_client[guild_id].play(
             discord.FFmpegPCMAudio(next_song_info['path'], **ffmpeg_options),
             after=self._create_after_callback(guild_id, context)
         )
-        self.bot.loop.create_task(self._start_timestamp_tracking(guild_id))
+        await self._start_timestamp_tracking(guild_id)
 
         embed = discord.Embed(
             description=f"Playing Now: <{next_song_info['url']}>\nLoop status: {self.server_to_current_loop_status[guild_id]}",
@@ -390,7 +399,7 @@ class YouTube(commands.Cog, name="youtube"):
         :param context: The application command context.
         """
         guild_id = context.guild.id
-        print(f"self.server_to_if_playnow[guild_id] is {self.server_to_if_playnow[guild_id]}.")
+        self.bot.logger.info(f"self.server_to_if_playnow[guild_id] is {self.server_to_if_playnow[guild_id]}.")
         # fetch the audio
         url = url.strip()
         await context.reply(f"Playing Now: {url} Start downloading...")
@@ -406,7 +415,8 @@ class YouTube(commands.Cog, name="youtube"):
 
         # play
         ffmpeg_options = {
-            "options": "-af 'volume=0.1' -ac 2"
+            "options": "-af 'volume=0.1' -vn -ac 2",
+            "stderr": subprocess.DEVNULL,
         }
         self.server_to_current_song_info[guild_id] = {
             'url': url,
@@ -421,7 +431,7 @@ class YouTube(commands.Cog, name="youtube"):
 
         # stop if playing
         if self.server_to_voice_client[guild_id].is_playing():
-            print("Stopping currently playing audio.")
+            self.bot.logger.info(f"Stopping currently playing audio. (guild id: {guild_id}) ")
             self.server_to_voice_client[guild_id].stop()
 
         # play the audio
@@ -629,18 +639,12 @@ class YouTube(commands.Cog, name="youtube"):
         :param context: The application command context.
         """
         guild_id = context.guild.id
-        if self.server_to_current_loop_status[guild_id]:
-            self.server_to_current_loop_status[guild_id] = False
-            embed = discord.Embed(
-                description="Loop status: off", color=0xE02B2B
-            )
-            await context.send(embed=embed)
-        else:
-            self.server_to_current_loop_status[guild_id] = True
-            embed = discord.Embed(
-                description="Loop status: on", color=0xE02B2B
-            )
-            await context.send(embed=embed)
+        self.server_to_current_loop_status[guild_id] = not self.server_to_current_loop_status[guild_id]
+        status = "on" if self.server_to_current_loop_status[guild_id] else "off"
+        embed = discord.Embed(
+            description=f"Loop status: {status}", color=0xE02B2B
+        )
+        await context.send(embed=embed)
 
     @commands.hybrid_command(
         name="nowplaying",
