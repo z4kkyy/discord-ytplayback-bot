@@ -10,14 +10,16 @@ import asyncio
 import os
 import re
 import subprocess
-from collections import defaultdict
-from collections import deque
+import time
+from collections import defaultdict, deque
 # from datetime import datetime
 from typing import Union
 
 import discord
 from discord.ext import commands
 from discord.ext.commands import Context
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
 
 
 class AsyncioDequeQueue:
@@ -53,6 +55,7 @@ class YouTube(commands.Cog, name="youtube"):
         self.server_to_timestamp_task = defaultdict(lambda: None)
 
         self.download_dir = os.path.join(os.getcwd(), "dldata/yt-dlp-download")
+        self.video_download_dir = os.path.join(os.getcwd(), "dldata/yt-dlp-video-download")
         self.download_archive_path = os.path.join(os.getcwd(), "dldata/yt-dlp-download-archive.txt")
 
         if not os.path.exists(self.download_dir):
@@ -60,6 +63,11 @@ class YouTube(commands.Cog, name="youtube"):
         if not os.path.exists(self.download_archive_path):
             with open(self.download_archive_path, "w") as _:
                 pass
+
+        gauth = GoogleAuth()
+        gauth.LocalWebserverAuth()
+
+        self.drive = GoogleDrive(gauth)
 
     def _create_after_callback(self, guild_id: int, context: Context) -> callable:
         def after_callback(error):
@@ -229,7 +237,6 @@ class YouTube(commands.Cog, name="youtube"):
                 print(stdout)
                 return None
 
-            return os.path.join(os.getcwd(), "yt-dlp-download", "test")
         except asyncio.TimeoutError:
             self.bot.logger.error(f"Failed to download a video: <{url}> (Timeout)")
             process.kill()
@@ -306,7 +313,11 @@ class YouTube(commands.Cog, name="youtube"):
                 else:
                     self.bot.logger.info(f"Detected unexpected disconnection. (guild id: {guild_id})")
                     # reconnect to the voice channel
-                    self.server_to_voice_client[guild_id] = await before.channel.connect()
+                    try:
+                        self.server_to_voice_client[guild_id] = await before.channel.connect()
+                        self.bot.logger.info("Reconnected to the voice channel.")
+                    except Exception as e:
+                        self.bot.logger.error(f"Failed to reconnect to the voice channel: {str(e)}")
 
                     if self.server_to_if_playnow[guild_id] is False:
                         return
@@ -400,6 +411,11 @@ class YouTube(commands.Cog, name="youtube"):
         """
         guild_id = context.guild.id
         self.bot.logger.info(f"self.server_to_if_playnow[guild_id] is {self.server_to_if_playnow[guild_id]}.")
+
+        # join the voice channel if not joined
+        if self.server_to_voice_client[guild_id] is None or not self.server_to_voice_client[guild_id].is_connected():
+            await self.ytjoin(context)
+
         # fetch the audio
         url = url.strip()
         await context.reply(f"Playing Now: {url} Start downloading...")
@@ -424,10 +440,6 @@ class YouTube(commands.Cog, name="youtube"):
             'path': file_path,
             'start_time': discord.utils.utcnow()
         }
-
-        # join the voice channel if not joined
-        if self.server_to_voice_client[guild_id] is None or not self.server_to_voice_client[guild_id].is_connected():
-            await self.ytjoin(context)
 
         # stop if playing
         if self.server_to_voice_client[guild_id].is_playing():
@@ -531,7 +543,7 @@ class YouTube(commands.Cog, name="youtube"):
             embed = discord.Embed(description="Skipped the current audio.", color=0xE02B2B)
 
             await context.send(embed=embed)
-            await self._play_next(guild_id, context)   # TODO: if len(queue) == 1, in play next, say that the queue is now empty
+            await self._play_next(guild_id, context)
         else:
             await context.send("No audio is currently playing.")
 
@@ -726,6 +738,143 @@ class YouTube(commands.Cog, name="youtube"):
             embed.add_field(name=f"/{command}", value=description, inline=False)
 
         await context.send(embed=embed)
+
+    async def _fetch_raw_video_async(self, url: str):
+        """
+        This method downloads the YouTube video asynchronously.
+
+        :param url: The url to the YouTube video.
+        """
+        self.bot.logger.info(f"[YouTube] [info] Start downloading {url}")
+
+        command = [
+            "yt-dlp",
+            url,
+            "--output", "%(title)s.%(ext)s",
+            "--format", "bestvideo+bestaudio/best",  # Changed to 'best' for standard quality
+            "--paths", self.video_download_dir,
+            "--merge-output-format", "mp4",
+            "--no-playlist",
+            "--no-keep-video",
+            "--no-part",
+            "--postprocessor-args", "-c:v copy -c:a aac -b:a 192k"
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
+            stdout, stderr = stdout.decode().strip(), stderr.decode().strip()
+
+            print(stdout)
+
+            if process.returncode == 0:
+                self.bot.logger.info(f"[YouTube] [info] Successfully downloaded {url}")
+
+                for line in stdout.split("\n"):
+                    if len(line) == 0:
+                        continue
+                    self.bot.logger.info(f"[YouTube] {line}")
+                    match_file_path = re.search(r'\[Merger\] Merging formats into(.+)', line)
+
+                    if match_file_path:
+                        file_path = match_file_path.group(1)[:-1]
+                        file_path = os.path.join(self.video_download_dir, os.path.basename(file_path))
+                        print("file_path:", file_path)
+                        return file_path
+            else:
+                self.bot.logger.error(f"Failed to download video: <{url}>")
+                self.bot.logger.error(f"Error: {stderr}")
+                return None
+
+        except asyncio.TimeoutError:
+            self.bot.logger.error(f"Timeout while downloading video: <{url}>")
+            process.kill()
+            return None
+        except Exception as e:
+            self.bot.logger.error(f"Unexpected error while downloading video <{url}>: {str(e)}")
+            return None
+
+    @commands.hybrid_command(
+        name="ytdownload",
+        description="Download a YouTube video and upload it to Google Drive.",
+    )
+    async def ytdownload(self, context: commands.Context, url: str) -> None:
+        try:
+            await context.defer()
+            user = context.author
+
+            # fetch the audio
+            url = url.strip()
+            await context.send("Start downloading...")
+            result = await self._fetch_raw_video_async(url)
+            if result is None:
+                embed = discord.Embed(
+                    description="Failed to fetch the video.", color=0xE02B2B
+                )
+                await context.send(embed=embed)
+                return
+
+            file_path = result
+            print(f"file path: {file_path}")
+
+            # Upload to Google Drive
+            folder_id = "1NiQGMwuxjMKa-xWeI5Bu6eVgAojfnQNH"
+            file_metadata = {
+                'title': os.path.basename(file_path),
+                'parents': [{'id': folder_id}]
+            }
+            file = self.drive.CreateFile(file_metadata)
+            file.SetContentFile(file_path)
+
+            # Upload the file and wait for completion
+            file.Upload()
+            while file.uploaded is False:
+                time.sleep(1)
+
+            # Insert permission and wait for completion
+            permission = file.InsertPermission({
+                'type': 'anyone',
+                'value': 'anyone',
+                'role': 'reader'
+            })
+            while permission.get('id') is None:
+                time.sleep(1)
+                permission.FetchMetadata()
+
+            share_link = file['alternateLink']
+            print(f"share link: {share_link}")
+
+            # Now it's safe to remove the file
+            os.remove(file_path)
+
+            # send the file to the user
+            embed = discord.Embed(
+                title="YouTube Download Success",
+                description="The video has been successfully downloaded and uploaded.",
+                color=0x00FF00
+            )
+            embed.add_field(name="Original URL", value=url, inline=False)
+            embed.add_field(name="Download Link", value=share_link, inline=False)
+
+            try:
+                await user.send(embed=embed)
+                await context.send("Download and upload completed. Check your DM for details.")
+            except discord.Forbidden:
+                await context.send("Download and upload completed, but I couldn't send you a DM with the details. Please check your privacy settings.")
+            except Exception as e:
+                self.bot.logger.error(f"Error sending DM to user {user.id}: {str(e)}")
+                await context.send("Download and upload completed, but there was an error sending you the details. Please contact an administrator.")
+
+        except discord.errors.NotFound:
+            await context.send("The interaction expired. Please try the command again.")
+        except Exception as e:
+            self.bot.logger.error(f"Error in ytdownload command: {str(e)}")
+            await context.send("An error occurred while processing your request. Please try again later.")
 
 
 async def setup(bot) -> None:
