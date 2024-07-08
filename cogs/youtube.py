@@ -18,8 +18,16 @@ from typing import Union
 import discord
 from discord.ext import commands
 from discord.ext.commands import Context
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
+# from pydrive2.auth import GoogleAuth
+# from pydrive2.drive import GoogleDrive
+
+from tqdm import tqdm
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 
 class AsyncioDequeQueue:
@@ -64,10 +72,10 @@ class YouTube(commands.Cog, name="youtube"):
             with open(self.download_archive_path, "w") as _:
                 pass
 
-        gauth = GoogleAuth()
-        gauth.LocalWebserverAuth()
+        # gauth = GoogleAuth()
+        # gauth.LocalWebserverAuth()
 
-        self.drive = GoogleDrive(gauth)
+        # self.drive = GoogleDrive(gauth)
 
     def _create_after_callback(self, guild_id: int, context: Context) -> callable:
         def after_callback(error):
@@ -750,7 +758,7 @@ class YouTube(commands.Cog, name="youtube"):
         command = [
             "yt-dlp",
             url,
-            "--output", "%(title)s.%(ext)s",
+            "--output", "%(id)s.%(ext)s",
             "--format", "bestvideo+bestaudio/best",  # Changed to 'best' for standard quality
             "--paths", self.video_download_dir,
             "--merge-output-format", "mp4",
@@ -784,7 +792,6 @@ class YouTube(commands.Cog, name="youtube"):
                     if match_file_path:
                         file_path = match_file_path.group(1)[:-1]
                         file_path = os.path.join(self.video_download_dir, os.path.basename(file_path))
-                        print("file_path:", file_path)
                         return file_path
             else:
                 self.bot.logger.error(f"Failed to download video: <{url}>")
@@ -820,34 +827,37 @@ class YouTube(commands.Cog, name="youtube"):
                 return
 
             file_path = result
-            print(f"file path: {file_path}")
+            # print(f"file path: {file_path}")
 
-            # Upload to Google Drive
-            folder_id = "1NiQGMwuxjMKa-xWeI5Bu6eVgAojfnQNH"
-            file_metadata = {
-                'title': os.path.basename(file_path),
-                'parents': [{'id': folder_id}]
-            }
-            file = self.drive.CreateFile(file_metadata)
-            file.SetContentFile(file_path)
+            # Upload to GigaFile
+            share_link = self.upload_to_gigafile(file_path)
 
-            # Upload the file and wait for completion
-            file.Upload()
-            while file.uploaded is False:
-                time.sleep(1)
+            # # Upload to Google Drive
+            # folder_id = "1NiQGMwuxjMKa-xWeI5Bu6eVgAojfnQNH"
+            # file_metadata = {
+            #     'title': os.path.basename(file_path),
+            #     'parents': [{'id': folder_id}]
+            # }
+            # file = self.drive.CreateFile(file_metadata)
+            # file.SetContentFile(file_path)
 
-            # Insert permission and wait for completion
-            permission = file.InsertPermission({
-                'type': 'anyone',
-                'value': 'anyone',
-                'role': 'reader'
-            })
-            while permission.get('id') is None:
-                time.sleep(1)
-                permission.FetchMetadata()
+            # # Upload the file and wait for completion
+            # file.Upload()
+            # while file.uploaded is False:
+            #     time.sleep(1)
 
-            share_link = file['alternateLink']
-            print(f"share link: {share_link}")
+            # # Insert permission and wait for completion
+            # permission = file.InsertPermission({
+            #     'type': 'anyone',
+            #     'value': 'anyone',
+            #     'role': 'reader'
+            # })
+            # while permission.get('id') is None:
+            #     time.sleep(1)
+            #     permission.FetchMetadata()
+
+            # share_link = file['alternateLink']
+            # print(f"share link: {share_link}")
 
             # Now it's safe to remove the file
             os.remove(file_path)
@@ -875,6 +885,85 @@ class YouTube(commands.Cog, name="youtube"):
         except Exception as e:
             self.bot.logger.error(f"Error in ytdownload command: {str(e)}")
             await context.send("An error occurred while processing your request. Please try again later.")
+
+    def upload_to_gigafile(self, file_path: str, lifetime: int = 100) -> str:
+        """
+        This method uploads a file to GigaFile and returns the download link.
+
+        :param file_path: The path to the file to upload.
+        :param lifetime: The lifetime of the file on GigaFile (in days).
+        :return: The download link for the uploaded file.
+        """
+        file_paths = [file_path]  # for compatibility with the existing method
+        options = Options()
+        options.add_argument("--headless")
+        options.page_load_strategy = 'eager'
+
+        driver = webdriver.Chrome(options=options)
+
+        driver.get("https://gigafile.nu/")
+
+        valid_lifetimes = [3, 5, 7, 14, 30, 60, 100]
+        if lifetime in valid_lifetimes:
+            lifetime_selector = f"li[data-lifetime-val='{lifetime}']"
+            element = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.CSS_SELECTOR, lifetime_selector)))
+
+            driver.execute_script("arguments[0].click();", element)
+        else:
+            print(f"無効な保存期限: {lifetime}。有効な値: {valid_lifetimes}")
+
+        file_input = driver.find_element(By.CSS_SELECTOR, "#upload_panel_button > input")
+        file_input.send_keys("\n".join(file_paths))
+
+        progress_bar = tqdm(total=100, desc="Overall Progress", unit="%")
+
+        while True:
+            progress_texts = []
+            for i in range(len(file_paths)):
+                progress_texts.append(driver.find_element(By.CSS_SELECTOR, f"#file_{i} > div.file_info_prog_box > span").text)
+
+            if all(text == "完了！" for text in progress_texts):
+                progress_bar.n = 100
+                progress_bar.update(0)
+                break
+
+            overall_progress = 0
+            for text in progress_texts:
+                if text != "完了！":
+                    percentage = ''.join(filter(str.isdigit, text))
+                    if percentage:
+                        overall_progress += int(percentage)
+                    else:
+                        overall_progress += 99
+
+            overall_progress /= len(file_paths)
+            progress_bar.n = min(overall_progress, 99)
+            progress_bar.update(0)
+
+            time.sleep(1)
+
+        progress_bar.close()
+
+        matomete_link_btn = driver.find_element(By.ID, "matomete_btn")
+        driver.execute_script("arguments[0].click();", matomete_link_btn)
+
+        try:
+            WebDriverWait(driver, 10).until(EC.alert_is_present(),
+                                        'Timed out waiting for PA creation ' +  # noqa: E128, W504
+                                        'confirmation popup to appear.')  # noqa: E128
+
+            alert = driver.switch_to.alert
+            alert.accept()
+
+        except TimeoutException:
+            pass
+
+        matomete_url_element = driver.find_element(By.ID, "matomete_url")
+        origin_value = matomete_url_element.get_attribute("origin")
+
+        driver.quit()
+
+        return origin_value
 
 
 async def setup(bot) -> None:
