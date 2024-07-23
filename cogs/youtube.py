@@ -50,6 +50,7 @@ class AsyncioDequeQueue:
         self._get_event.set()
 
 
+# using yt-dlp (https://github.com/yt-dlp/yt-dlp)
 class YouTube(commands.Cog, name="youtube"):
     def __init__(self, bot) -> None:
         self.bot = bot
@@ -815,7 +816,6 @@ class YouTube(commands.Cog, name="youtube"):
             await context.defer()
             user = context.author
 
-            # fetch the audio
             url = url.strip()
             await context.send("Start downloading...")
             result = await self._fetch_raw_video_async(url)
@@ -830,37 +830,10 @@ class YouTube(commands.Cog, name="youtube"):
             # print(f"file path: {file_path}")
 
             # Upload to GigaFile
-            share_link = self.upload_to_gigafile(file_path)
-
-            # # Upload to Google Drive
-            # folder_id = "1NiQGMwuxjMKa-xWeI5Bu6eVgAojfnQNH"
-            # file_metadata = {
-            #     'title': os.path.basename(file_path),
-            #     'parents': [{'id': folder_id}]
-            # }
-            # file = self.drive.CreateFile(file_metadata)
-            # file.SetContentFile(file_path)
-
-            # # Upload the file and wait for completion
-            # file.Upload()
-            # while file.uploaded is False:
-            #     time.sleep(1)
-
-            # # Insert permission and wait for completion
-            # permission = file.InsertPermission({
-            #     'type': 'anyone',
-            #     'value': 'anyone',
-            #     'role': 'reader'
-            # })
-            # while permission.get('id') is None:
-            #     time.sleep(1)
-            #     permission.FetchMetadata()
-
-            # share_link = file['alternateLink']
-            # print(f"share link: {share_link}")
+            share_link = await self.upload_to_gigafile_async(file_path)
 
             # Now it's safe to remove the file
-            os.remove(file_path)
+            await asyncio.to_thread(os.remove, file_path)
 
             # send the file to the user
             embed = discord.Embed(
@@ -964,6 +937,9 @@ class YouTube(commands.Cog, name="youtube"):
         driver.quit()
 
         return origin_value
+
+    async def upload_to_gigafile_async(self, file_path: str, lifetime: int = 100) -> str:
+        return await asyncio.to_thread(self.upload_to_gigafile, file_path, lifetime)
 
 
 async def setup(bot) -> None:
