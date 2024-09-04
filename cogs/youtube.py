@@ -99,12 +99,32 @@ class YouTube(commands.Cog, name="youtube"):
                     self.bot.loop.create_task(self._start_timestamp_tracking(guild_id))
                 elif self.server_to_queue[guild_id].queue:
                     self.bot.logger.info(f"Queue is not empty. Playing next song. (guild id: {guild_id})")
+                    # delete the file
+                    current_song = self.server_to_current_song_info[guild_id]
+                    if current_song:
+                        try:
+                            os.remove(current_song['path'])
+                        except OSError:
+                            pass
                     await self._play_next(guild_id, context)
                 else:
+                    current_song = self.server_to_current_song_info[guild_id]
+                    if current_song:
+                        try:
+                            os.remove(current_song['path'])
+                        except OSError:
+                            pass
                     self.bot.logger.info(f"Loop is off and queue is empty. Stopping playback. (guild id: {guild_id})")
                     self.server_to_if_playnow[guild_id] = False
                     self.server_to_current_song_info[guild_id] = None
                     self.server_to_timestamps[guild_id] = 0
+                    # delete the file
+                    current_song = self.server_to_current_song_info[guild_id]
+                    if current_song:
+                        try:
+                            os.remove(current_song['path'])
+                        except OSError:
+                            pass
                     if context:
                         embed = discord.Embed(
                             description="Playback finished. The queue is now empty.", color=0xE02B2B
@@ -152,7 +172,7 @@ class YouTube(commands.Cog, name="youtube"):
             "--verbose",
             # "--write-pages",
             # "--print-traffic",
-            "--download-archive", self.download_archive_path,
+            # "--download-archive", self.download_archive_path,
         ]
 
         self.bot.logger.info(f"[YouTube] [info] Start downloading {url}")
@@ -205,7 +225,7 @@ class YouTube(commands.Cog, name="youtube"):
             "--verbose",
             # "--write-pages",
             # "--print-traffic",
-            "--download-archive", self.download_archive_path,
+            # "--download-archive", self.download_archive_path,
         ]
 
         # process as a coroutine
@@ -352,16 +372,25 @@ class YouTube(commands.Cog, name="youtube"):
                 self.bot.logger.info(f"Resuming playback with loop status: off (guild id: {guild_id})")
 
     async def _play_next(self, guild_id: int, context: Context) -> None:
+        # ensure the audio is not playing
+        if self.server_to_voice_client[guild_id].is_playing():
+            self.bot.logger.info(f"function _play_next is called while playing. (guild id: {guild_id}) ")
+            return
+
+        # remove the current song
+        current_song = self.server_to_current_song_info[guild_id]
+        if current_song:
+            try:
+                os.remove(current_song['path'])
+            except OSError:
+                pass
+
         if not self.server_to_queue[guild_id].queue:
             embed = discord.Embed(description="The queue is now empty.", color=0xE02B2B)
             await context.send(embed=embed)
             self.server_to_if_playnow[guild_id] = False
             self.server_to_current_song_info[guild_id] = None
             self.server_to_timestamps[guild_id] = 0
-            return
-
-        if self.server_to_voice_client[guild_id].is_playing():
-            self.bot.logger.info(f"function _play_next is called while playing. (guild id: {guild_id}) ")
             return
 
         if self.server_to_timestamp_task[guild_id]:
@@ -547,6 +576,13 @@ class YouTube(commands.Cog, name="youtube"):
                 self.server_to_timestamp_task[guild_id].cancel()
                 self.server_to_timestamp_task[guild_id] = None
 
+            # delete the file
+            current_song = self.server_to_current_song_info[guild_id]
+            if current_song:
+                try:
+                    os.remove(current_song['path'])
+                except OSError:
+                    pass
             self.server_to_current_song_info[guild_id] = None
             self.server_to_timestamps[guild_id] = 0
             embed = discord.Embed(description="Skipped the current audio.", color=0xE02B2B)
